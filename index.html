@@ -55,6 +55,7 @@ nav button.on{color:var(--brand)}
 .tbl{width:100%;border-collapse:collapse;font-size:13px}
 .tbl td{padding:7px 2px;border-bottom:1px dashed var(--line)}
 summary{cursor:pointer;font-weight:700}
+.sm{width:auto;padding:7px 14px;font-size:14px}
 </style>
 </head>
 <body>
@@ -72,6 +73,18 @@ const pad=n=>String(n).padStart(2,'0');
 const dstr=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
 const hmNow=()=>{const d=new Date();return pad(d.getHours())+':'+pad(d.getMinutes())};
 let tab='dash',ym=dstr(new Date()).slice(0,7);
+const shift=(m,n)=>{let[y,mm]=m.split('-').map(Number);mm+=n;while(mm<1){mm+=12;y--}while(mm>12){mm-=12;y++}return y+'-'+pad(mm)};
+const diff=(a,b)=>{const[y1,m1]=a.split('-').map(Number),[y2,m2]=b.split('-').map(Number);return(y2-y1)*12+(m2-m1)};
+const mname=m=>MN[+m.slice(5)-1];
+function fix(){
+  S.set=Object.assign(def().set,S.set||{});S.ov=S.ov||{};
+  const cur=dstr(new Date()).slice(0,7);
+  S.debts.forEach(d=>{
+    if(!d.start){const done=d.months-(d.rem!==undefined?d.rem:d.months);d.start=shift(cur,-done);d.paid={};for(let i=0;i<done;i++)d.paid[shift(d.start,i)]=true;delete d.rem}
+    d.paid=d.paid||{};
+  });
+}
+fix();
 const N=v=>Number(v).toLocaleString('ar-EG',{maximumFractionDigits:2});
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=id=>parseFloat(document.getElementById(id).value)||0;
@@ -94,20 +107,23 @@ function dayCalc(a,k){
   z.ext=Math.max(0,o-ex)/60*s.xm;
   return z;
 }
-function mo(){
+function mo(m){
   const r={norm:0,ext:0,direct:0};
-  for(const k in S.att)if(k.startsWith(ym)){const d=dayCalc(S.att[k],k);r.norm+=d.norm;r.ext+=d.ext;r.direct+=d.direct}
+  for(const k in S.att)if(k.startsWith(m)){const d=dayCalc(S.att[k],k);r.norm+=d.norm;r.ext+=d.ext;r.direct+=d.direct}
   return r;
 }
 const mthly=d=>d.total/d.months;
-const remDebt=d=>mthly(d)*d.rem;
+const remMonths=d=>d.months-Object.keys(d.paid||{}).length;
+const remDebt=d=>mthly(d)*Math.max(0,remMonths(d));
+const dueIdx=(d,m)=>{const i=diff(d.start,m);return i>=0&&i<d.months?i:-1};
+function otCalc(m){const s=S.set,r=mo(m),total=r.norm+r.ext,over=Math.max(0,total-s.req),otH=over+r.direct;return{...r,total,over,otH,otV:otH*s.otRate}}
 function calc(){
-  const s=S.set,m=mo(),total=m.norm+m.ext,over=Math.max(0,total-s.req),otH=over+m.direct,otV=otH*s.otRate;
-  const perfV=s.d25*s.perf/100,p25=s.d25+perfV+otV,income=s.d5+s.d15+p25;
-  const inst=S.debts.filter(d=>d.rem>0).reduce((a,d)=>a+mthly(d),0);
+  const s=S.set,o=otCalc(shift(ym,-1)),man=S.ov[ym],d15=man!==undefined?man:o.otV;
+  const p25=s.d25+s.d25*s.perf/100,income=s.d5+d15+p25;
+  const inst=S.debts.filter(d=>dueIdx(d,ym)>=0).reduce((a,d)=>a+mthly(d),0);
   const fixed=S.fixed.reduce((a,f)=>a+f.amt,0);
   const daily=S.daily.filter(x=>x.date.startsWith(ym)).reduce((a,x)=>a+x.amt,0);
-  return{m,total,over,otH,otV,perfV,p25,income,inst,fixed,daily,net:income-inst-fixed-daily};
+  return{o,man,auto15:o.otV,d15,p25,income,inst,fixed,daily,net:income-inst-fixed-daily};
 }
 
 // ===== واجهة =====
@@ -120,25 +136,33 @@ const go=t=>{tab=t;render();scrollTo(0,0)};
 function mv(d){let[y,m]=ym.split('-').map(Number);m+=d;if(m<1){m=12;y--}if(m>12){m=1;y++}ym=y+'-'+pad(m);render()}
 
 function dash(){
-  const c=calc(),s=S.set;
+  const c=calc(),s=S.set,pm=mname(shift(ym,-1));
   return `<div class="card hero ${c.net<0?'neg':''}"><div>الصافي المتبقي معك كاش</div><div class="big">${N(c.net)}</div></div>
   <div class="card"><h2>الدخل</h2>
    <div class="row"><span>قبض يوم 5</span><b class="in">${N(s.d5)}</b></div>
-   <div class="row"><span>قبض يوم 15</span><b class="in">${N(s.d15)}</b></div>
-   <div class="row"><span>قبض يوم 25</span><b class="in">${N(c.p25)}</b></div>
+   <div class="row"><span>قبض يوم 15 (إضافي ${pm})</span><span><b class="in">${N(c.d15)}</b><button class="del" aria-label="تعديل" onclick="edit15()">✎</button></span></div>
+   <div class="sub">${N(c.o.otH.toFixed(2))} ساعة × ${N(s.otRate)}${c.man!==undefined?' — معدّل يدوياً (التلقائي: '+N(c.auto15)+')':''}</div>
+   <div class="row"><span>قبض يوم 25 (أساسي + أداء)</span><b class="in">${N(c.p25)}</b></div>
    <div class="row"><b>إجمالي الدخل</b><b class="in">${N(c.income)}</b></div></div>
   <div class="card"><h2>الخصومات</h2>
-   <div class="row"><span>الأقساط الشهرية</span><b class="out">${N(c.inst)}</b></div>
+   <div class="row"><span>أقساط ${mname(ym)}</span><b class="out">${N(c.inst)}</b></div>
    <div class="row"><span>المصاريف الثابتة</span><b class="out">${N(c.fixed)}</b></div>
    <div class="row"><span>المصاريف اليومية</span><b class="out">${N(c.daily)}</b></div></div>
   <div class="card"><div class="row"><span>إجمالي الدين المتبقي</span><b>${N(S.debts.reduce((a,d)=>a+remDebt(d),0))}</b></div></div>
   <div class="card"><h2>نسخة احتياطية</h2><div class="g2"><button class="btn alt" onclick="bk()">نسخ بياناتي</button><button class="btn alt" onclick="rs()">استرجاع</button></div></div>`;
 }
+function edit15(){
+  let t=prompt('اكتب مبلغ يوم 15 يدوياً.\nاتركه فاضي للرجوع للحساب التلقائي:',S.ov[ym]!==undefined?S.ov[ym]:'');
+  if(t===null)return;
+  t=t.replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).trim();
+  if(t==='')delete S.ov[ym];else{const v=parseFloat(t);if(isNaN(v))return alert('رقم غير صحيح.');S.ov[ym]=v}
+  save();render();
+}
 function bk(){const t=JSON.stringify(S);try{navigator.clipboard.writeText(t).then(()=>alert('تم النسخ. الصقه في ملاحظات أو واتساب لنفسك.'),()=>prompt('انسخ النص:',t))}catch(e){prompt('انسخ النص:',t)}}
-function rs(){const t=prompt('الصق النسخة الاحتياطية:');if(!t)return;try{S=JSON.parse(t);S.set=Object.assign(def().set,S.set||{});save();render()}catch(e){alert('النص غير صحيح.')}}
+function rs(){const t=prompt('الصق النسخة الاحتياطية:');if(!t)return;try{S=JSON.parse(t);fix();save();render()}catch(e){alert('النص غير صحيح.')}}
 
 function work(){
-  const s=S.set,c=calc(),today=dstr(new Date()),ta=S.att[today]||{};
+  const s=S.set,cur=otCalc(ym),today=dstr(new Date()),ta=S.att[today]||{};
   let btn;
   if(!ta.in)btn=`<button class="punch" onclick="punch('in')"><span>👆</span>بصمة حضور</button>`;
   else if(!ta.out)btn=`<button class="punch o" onclick="punch('out')"><span>👆</span>بصمة انصراف</button>`;
@@ -151,33 +175,33 @@ function work(){
    <div class="row"><span>الانصراف</span><b>${ta.out||'--'}</b></div>
    <label class="ck"><input type="checkbox" id="te" ${ta.exc?'checked':''} onchange="tog('exc',this.checked)"> تأخير بإذن اليوم</label>
    <label class="ck"><input type="checkbox" id="th" ${ta.hol?'checked':''} onchange="tog('hol',this.checked)"> اليوم إجازة رسمية</label></div>
-  <div class="card"><h2>حساب الشهر</h2>
-   <div class="row"><span>ساعات العمل العادية</span><b>${N(c.m.norm.toFixed(2))}</b></div>
-   <div class="row"><span>ساعات بعد ${s.extra} (×${s.xm})</span><b>${N(c.m.ext.toFixed(2))}</b></div>
-   <div class="row"><span>المجموع − المطلوب (${N(s.req)})</span><b>${N(c.total.toFixed(2))} − ${N(s.req)} = ${c.total>=s.req?N(c.over.toFixed(2)):'ناقص '+N((s.req-c.total).toFixed(2))}</b></div>
-   <div class="row"><span>جمعة/سبت/رسمي (×${s.hm})</span><b>${N(c.m.direct.toFixed(2))}</b></div>
-   <div class="row"><b>إجمالي الإضافي</b><b class="in">${N(c.otH.toFixed(2))} ساعة = ${N(c.otV)}</b></div>
-   <div class="row"><b>قبض يوم 25</b><b class="in">${N(c.p25)}</b></div></div>
+  <div class="card"><h2>إضافي شهر ${mname(ym)}</h2>
+   <div class="row"><span>ساعات العمل العادية</span><b>${N(cur.norm.toFixed(2))}</b></div>
+   <div class="row"><span>ساعات بعد ${s.extra} (×${s.xm})</span><b>${N(cur.ext.toFixed(2))}</b></div>
+   <div class="row"><span>المجموع − المطلوب (${N(s.req)})</span><b>${N(cur.total.toFixed(2))} − ${N(s.req)} = ${cur.total>=s.req?N(cur.over.toFixed(2)):'ناقص '+N((s.req-cur.total).toFixed(2))}</b></div>
+   <div class="row"><span>جمعة/سبت/رسمي (×${s.hm})</span><b>${N(cur.direct.toFixed(2))}</b></div>
+   <div class="row"><b>إجمالي الإضافي</b><b class="in">${N(cur.otH.toFixed(2))} ساعة = ${N(cur.otV)}</b></div>
+   <div class="sub">يتقبض يوم 15 ${mname(shift(ym,1))}</div></div>
   <div class="card"><h2>سجل الشهر</h2>${rows}</div>
   <div class="card"><h2>إضافة/تعديل يوم يدوياً</h2>
    <div class="g3"><div><label>التاريخ</label><input id="ad" type="date" value="${today}"></div><div><label>حضور</label><input id="ai" type="time"></div><div><label>انصراف</label><input id="ao" type="time"></div></div>
    <label class="ck"><input type="checkbox" id="ae"> تأخير بإذن</label><label class="ck"><input type="checkbox" id="ah"> إجازة رسمية</label>
    <button class="btn alt" onclick="addAtt()">حفظ اليوم</button></div>
   <div class="card"><details ${s.d5||s.d25?'':'open'}><summary>إعدادات الراتب والدوام</summary><div style="margin-top:10px">
-   <div class="g2"><div><label>قبض يوم 5</label><input id="s5" type="number" inputmode="decimal" value="${s.d5||''}"></div>
-   <div><label>قبض يوم 15</label><input id="s15" type="number" inputmode="decimal" value="${s.d15||''}"></div>
+   <div class="g2"><div><label>قبض يوم 5 (ثابت)</label><input id="s5" type="number" inputmode="decimal" value="${s.d5||''}"></div>
    <div><label>الأساسي ليوم 25</label><input id="s25" type="number" inputmode="decimal" value="${s.d25||''}"></div>
    <div><label>نسبة الأداء %</label><input id="sp" type="number" inputmode="decimal" value="${s.perf||''}"></div>
-   <div><label>قيمة ساعة الإضافي</label><input id="so" type="number" inputmode="decimal" value="${s.otRate||''}"></div>
+   <div><label>سعر ساعة الإضافي</label><input id="so" type="number" inputmode="decimal" value="${s.otRate||''}"></div>
    <div><label>الساعات المطلوبة شهرياً</label><input id="sr" type="number" inputmode="decimal" value="${s.req}"></div>
    <div><label>بداية الدوام</label><input id="st" type="time" value="${s.start}"></div>
    <div><label>نهاية الدوام</label><input id="se" type="time" value="${s.end}"></div>
    <div><label>الإضافي يبدأ بعد</label><input id="sx" type="time" value="${s.extra}"></div>
    <div><label>معامل الإضافي</label><input id="sm" type="number" step="0.1" inputmode="decimal" value="${s.xm}"></div>
    <div><label>معامل جمعة/سبت/رسمي</label><input id="sh" type="number" step="0.1" inputmode="decimal" value="${s.hm}"></div></div>
+   <div class="sub" style="margin-bottom:8px">قبض يوم 15 = إضافي الشهر السابق × سعر الساعة (تلقائي، وتقدر تعدله من اللوحة). قبض يوم 25 = الأساسي + نسبة الأداء.</div>
    <button class="btn" onclick="saveSet()">حفظ الإعدادات</button></div></details></div>`;
 }
-function saveSet(){S.set={d5:num('s5'),d15:num('s15'),d25:num('s25'),perf:num('sp'),otRate:num('so'),req:num('sr')||208,start:val('st')||'08:00',end:val('se')||'16:00',extra:val('sx')||'16:15',xm:num('sm')||1.5,hm:num('sh')||2};save();render()}
+function saveSet(){S.set={d5:num('s5'),d15:0,d25:num('s25'),perf:num('sp'),otRate:num('so'),req:num('sr')||208,start:val('st')||'08:00',end:val('se')||'16:00',extra:val('sx')||'16:15',xm:num('sm')||1.5,hm:num('sh')||2};save();render()}
 function punch(k){const d=dstr(new Date());S.att[d]=S.att[d]||{};S.att[d][k]=hmNow();save();render()}
 function punchAgain(){if(confirm('تعديل بصمة اليوم؟ سيتم مسح اليوم لتبصم من جديد.')){delete S.att[dstr(new Date())];save();render()}}
 function tog(k,v){const d=dstr(new Date());S.att[d]=S.att[d]||{};S.att[d][k]=v;save();render()}
@@ -185,20 +209,27 @@ function addAtt(){const d=val('ad'),i=val('ai'),o=val('ao');if(!d||!i||!o)return
 function delAtt(k){delete S.att[k];save();render()}
 
 function debts(){
-  const list=S.debts.length?S.debts.map((d,i)=>{const pct=Math.round((d.months-d.rem)/d.months*100);
+  const due=S.debts.map((d,i)=>({d,i,k:dueIdx(d,ym)})).filter(x=>x.k>=0);
+  const tot=due.reduce((a,x)=>a+mthly(x.d),0);
+  const dueHtml=due.length?due.map(x=>`<div class="item"><div class="top"><span>${esc(x.d.name)} <span class="sub">(قسط ${N(x.k+1)} من ${N(x.d.months)})</span></span><b class="out">${N(mthly(x.d))}</b></div>
+   <button class="btn sm ${x.d.paid[ym]?'alt':''}" style="margin-top:6px" onclick="togPaid(${x.i},'${ym}')">${x.d.paid[ym]?'✓ مدفوع (إلغاء)':'تم السداد'}</button></div>`).join('')+`<div class="row"><b>إجمالي المستحق</b><b class="out">${N(tot)}</b></div>`:'<div class="empty">لا أقساط مستحقة في هذا الشهر 🎉</div>';
+  const list=S.debts.map((d,i)=>{const pct=Math.round(Object.keys(d.paid).length/d.months*100);
+    const sched=Array.from({length:d.months},(_,j)=>{const m=shift(d.start,j);return `<tr><td>${mname(m)} ${m.slice(0,4)}</td><td>${N(mthly(d))}</td><td>${d.paid[m]?'✓':''}</td></tr>`}).join('');
     return `<div class="item"><div class="top"><b>${esc(d.name)}</b><button class="del" aria-label="حذف" onclick="delDebt(${i})">✕</button></div>
     <div class="bar"><i style="width:${pct}%"></i></div>
     <div class="row"><span>القسط الشهري</span><b>${N(mthly(d))}</b></div>
-    <div class="row"><span>الشهور المتبقية</span><b>${N(d.rem)} من ${N(d.months)}</b></div>
-    <div class="row"><span>الدين المتبقي</span><b class="out">${N(remDebt(d))}</b></div>
-    ${d.rem>0?`<button class="btn" onclick="pay(${i})">سداد القسط الشهري</button>`:'<div class="empty in">✓ تم السداد بالكامل</div>'}</div>`}).join(''):'<div class="empty">لا توجد ديون. أضف أول دين.</div>';
-  return `<div class="card"><h2>ديوني وأقساطي</h2>${list}</div>
+    <div class="row"><span>من — إلى</span><b>${mname(d.start)} — ${mname(shift(d.start,d.months-1))} ${shift(d.start,d.months-1).slice(0,4)}</b></div>
+    <div class="row"><span>الدين المتبقي</span><b class="out">${N(remDebt(d))} (${N(Math.max(0,remMonths(d)))} شهر)</b></div>
+    <details><summary>جدول الأقساط</summary><table class="tbl">${sched}</table></details></div>`}).join('');
+  return `<div class="card"><h2>مستحق في ${mname(ym)}</h2>${dueHtml}</div>
+  <div class="card"><h2>كل الديون</h2>${list||'<div class="empty">لا توجد ديون. أضف أول دين.</div>'}</div>
   <div class="card"><h2>إضافة دين</h2><label>اسم الجهة</label><input id="dn" type="text">
    <div class="g2"><div><label>المبلغ الإجمالي</label><input id="dt" type="number" inputmode="decimal"></div><div><label>عدد الشهور</label><input id="dm" type="number" inputmode="numeric"></div></div>
+   <label>شهر أول قسط</label><input id="dsm" type="month" value="${ym}">
    <button class="btn" onclick="addDebt()">إضافة الدين</button></div>`;
 }
-function addDebt(){const name=val('dn'),total=num('dt'),months=Math.round(num('dm'));if(!name||total<=0||months<=0)return alert('أدخل اسم الجهة والمبلغ وعدد الشهور.');S.debts.push({name,total,months,rem:months});save();render()}
-function pay(i){const d=S.debts[i];if(d.rem>0){d.rem--;save();render()}}
+function addDebt(){const name=val('dn'),total=num('dt'),months=Math.round(num('dm')),start=val('dsm')||ym;if(!name||total<=0||months<=0)return alert('أدخل اسم الجهة والمبلغ وعدد الشهور.');S.debts.push({name,total,months,start,paid:{}});save();render()}
+function togPaid(i,m){const d=S.debts[i];if(d.paid[m])delete d.paid[m];else d.paid[m]=true;save();render()}
 function delDebt(i){if(confirm('حذف هذا الدين؟')){S.debts.splice(i,1);save();render()}}
 
 function exp(){
